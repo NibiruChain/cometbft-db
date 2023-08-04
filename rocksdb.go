@@ -5,8 +5,10 @@ package db
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 
 	"github.com/linxGnu/grocksdb"
 )
@@ -29,23 +31,33 @@ type RocksDB struct {
 var _ DB = (*RocksDB)(nil)
 
 func NewRocksDB(name string, dir string) (*RocksDB, error) {
-	// default rocksdb option, good enough for most cases, including heavy workloads.
-	// 1GB table cache, 512MB write buffer(may use 50% more on heavy workloads).
-	// compression: snappy as default, need to -lsnappy to enable.
-	bbto := grocksdb.NewDefaultBlockBasedTableOptions()
-	bbto.SetBlockCache(grocksdb.NewLRUCache(1 << 30))
-	bbto.SetFilterPolicy(grocksdb.NewBloomFilter(10))
-
 	opts := grocksdb.NewDefaultOptions()
-	opts.SetBlockBasedTableFactory(bbto)
 	opts.SetCreateIfMissing(true)
-	opts.IncreaseParallelism(runtime.NumCPU())
-	// 1.5GB maximum memory use for writebuffer.
-	opts.OptimizeLevelStyleCompaction(512 * 1024 * 1024)
+	opts.IncreaseParallelism(runtime.GOMAXPROCS(0))
+
+	if value, ok := os.LookupEnv("ROCKSDB_BLOCK_CACHE_SIZE"); ok {
+		size, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		bbto := grocksdb.NewDefaultBlockBasedTableOptions()
+		bbto.SetBlockCache(grocksdb.NewLRUCache(size))
+		bbto.SetFilterPolicy(grocksdb.NewBloomFilter(10))
+		opts.SetBlockBasedTableFactory(bbto)
+	}
+
+	if value, ok := os.LookupEnv("ROCKSDB_MEMTABLE_MEMORY_BUDGET"); ok {
+		size, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		opts.OptimizeLevelStyleCompaction(size)
+	}
 	return NewRocksDBWithOptions(name, dir, opts)
 }
 
 func NewRocksDBWithOptions(name string, dir string, opts *grocksdb.Options) (*RocksDB, error) {
+	defer opts.Destroy()
 	dbPath := filepath.Join(dir, name+".db")
 	db, err := grocksdb.OpenDb(opts, dbPath)
 	if err != nil {
